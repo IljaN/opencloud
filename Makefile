@@ -63,6 +63,7 @@ OC_MODULES = \
 	services/users \
 	services/web \
 	services/webdav\
+	services/sftp\
 	services/webfinger\
 	opencloud \
 	pkg

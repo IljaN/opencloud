@@ -38,6 +38,7 @@ import (
 	proxy "github.com/opencloud-eu/opencloud/services/proxy/pkg/command"
 	search "github.com/opencloud-eu/opencloud/services/search/pkg/command"
 	settings "github.com/opencloud-eu/opencloud/services/settings/pkg/command"
+	sftp "github.com/opencloud-eu/opencloud/services/sftp/pkg/command"
 	sharing "github.com/opencloud-eu/opencloud/services/sharing/pkg/command"
 	sse "github.com/opencloud-eu/opencloud/services/sse/pkg/command"
 	storagepubliclink "github.com/opencloud-eu/opencloud/services/storage-publiclink/pkg/command"
@@ -261,6 +262,11 @@ var svccmds = []register.Command{
 	func(cfg *config.Config) *cli.Command {
 		return ServiceCommand(cfg, cfg.Webfinger.Service.Name, webfinger.GetCommands(cfg.Webfinger), func(c *config.Config) {
 			cfg.Webfinger.Commons = cfg.Commons
+		})
+	},
+	func(cfg *config.Config) *cli.Command {
+		return ServiceCommand(cfg, cfg.SFTP.Service.Name, sftp.GetCommands(cfg.SFTP), func(c *config.Config) {
+			cfg.SFTP.Commons = cfg.Commons
 		})
 	},
 }

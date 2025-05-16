@@ -67,6 +67,7 @@ require (
 	github.com/opencloud-eu/reva/v2 v2.33.1-0.20250520152851-d33c49bb52b9
 	github.com/orcaman/concurrent-map v1.0.0
 	github.com/pkg/errors v0.9.1
+	github.com/pkg/sftp v1.13.9
 	github.com/pkg/xattr v0.4.10
 	github.com/prometheus/client_golang v1.22.0
 	github.com/r3labs/sse/v2 v2.10.0
@@ -238,6 +239,7 @@ require (
 	github.com/kevinburke/ssh_config v1.2.0 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
+	github.com/kr/fs v0.1.0 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/libregraph/oidc-go v1.1.0 // indirect
 	github.com/longsleep/go-metrics v1.0.0 // indirect

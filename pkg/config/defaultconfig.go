@@ -32,6 +32,7 @@ import (
 	proxy "github.com/opencloud-eu/opencloud/services/proxy/pkg/config/defaults"
 	search "github.com/opencloud-eu/opencloud/services/search/pkg/config/defaults"
 	settings "github.com/opencloud-eu/opencloud/services/settings/pkg/config/defaults"
+	sftp "github.com/opencloud-eu/opencloud/services/sftp/pkg/config/defaults"
 	sharing "github.com/opencloud-eu/opencloud/services/sharing/pkg/config/defaults"
 	sse "github.com/opencloud-eu/opencloud/services/sse/pkg/config/defaults"
 	storagepublic "github.com/opencloud-eu/opencloud/services/storage-publiclink/pkg/config/defaults"
@@ -99,5 +100,6 @@ func DefaultConfig() *Config {
 		Web:               web.DefaultConfig(),
 		WebDAV:            webdav.DefaultConfig(),
 		Webfinger:         webfinger.DefaultConfig(),
+		SFTP:              sftp.DefaultConfig(),
 	}
 }

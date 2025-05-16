@@ -32,6 +32,7 @@ import (
 	proxy "github.com/opencloud-eu/opencloud/services/proxy/pkg/config"
 	search "github.com/opencloud-eu/opencloud/services/search/pkg/config"
 	settings "github.com/opencloud-eu/opencloud/services/settings/pkg/config"
+	sftp "github.com/opencloud-eu/opencloud/services/sftp/pkg/config"
 	sharing "github.com/opencloud-eu/opencloud/services/sharing/pkg/config"
 	sse "github.com/opencloud-eu/opencloud/services/sse/pkg/config"
 	storagepublic "github.com/opencloud-eu/opencloud/services/storage-publiclink/pkg/config"
@@ -124,4 +125,5 @@ type Config struct {
 	WebDAV            *webdav.Config         `yaml:"webdav"`
 	Webfinger         *webfinger.Config      `yaml:"webfinger"`
 	Search            *search.Config         `yaml:"search"`
+	SFTP              *sftp.Config           `yaml:"sftp"`
 }

@@ -850,6 +850,9 @@ github.com/klauspost/cpuid/v2
 # github.com/kovidgoyal/imaging v1.6.4
 ## explicit; go 1.21
 github.com/kovidgoyal/imaging
+# github.com/kr/fs v0.1.0
+## explicit
+github.com/kr/fs
 # github.com/leodido/go-urn v1.4.0
 ## explicit; go 1.18
 github.com/leodido/go-urn
@@ -1635,6 +1638,11 @@ github.com/pjbgf/sha1cd/ubc
 # github.com/pkg/errors v0.9.1
 ## explicit
 github.com/pkg/errors
+# github.com/pkg/sftp v1.13.9
+## explicit; go 1.15
+github.com/pkg/sftp
+github.com/pkg/sftp/internal/encoding/ssh/filexfer
+github.com/pkg/sftp/internal/encoding/ssh/filexfer/openssh
 # github.com/pkg/xattr v0.4.10
 ## explicit; go 1.14
 github.com/pkg/xattr

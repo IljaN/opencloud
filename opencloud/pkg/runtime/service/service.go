@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	sftp "github.com/opencloud-eu/opencloud/services/sftp/pkg/command"
 	"net"
 	"net/http"
 	"net/rpc"
@@ -302,6 +303,12 @@ func NewService(ctx context.Context, options ...Option) (*Service, error) {
 		cfg.OCM.Context = ctx
 		cfg.OCM.Commons = cfg.Commons
 		return ocm.Execute(cfg.OCM)
+	})
+
+	reg(3, opts.Config.SFTP.Service.Name, func(ctx context.Context, cfg *occfg.Config) error {
+		cfg.SFTP.Context = ctx
+		cfg.SFTP.Commons = cfg.Commons
+		return sftp.Execute(cfg.SFTP)
 	})
 
 	// out of some unknown reason ci gets angry when frontend service starts in priority group 3
