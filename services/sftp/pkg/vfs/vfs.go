@@ -15,7 +15,8 @@ import (
 	"github.com/pkg/sftp"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"io"
-	"io/fs"
+
+	iofs "io/fs"
 	"os"
 	"path"
 	"sort"
@@ -404,7 +405,7 @@ func (f listerat) ListAt(ls []os.FileInfo, offset int64) (int, error) {
 type fileInfo struct {
 	name  string
 	size  int64
-	mode  fs.FileMode
+	mode  iofs.FileMode
 	mtime time.Time
 	isDir bool
 	sys   any
@@ -418,7 +419,7 @@ func (f fileInfo) Size() int64 {
 	return f.size
 }
 
-func (f fileInfo) Mode() fs.FileMode {
+func (f fileInfo) Mode() iofs.FileMode {
 	return f.mode
 }
 
@@ -461,6 +462,49 @@ func (fs *root) listStorageSpaces() ([]*storageProvider.StorageSpace, error) {
 	return lSSRes.GetStorageSpaces(), nil
 }
 
+func splitPath(path string) (string, string) {
+	// Remove leading slash, if any
+	trimmed := strings.TrimPrefix(path, "/")
+
+	// Split into two parts
+	parts := strings.SplitN(trimmed, "/", 2)
+
+	if len(parts) == 0 || parts[0] == "" {
+		return "", ""
+	}
+
+	first := parts[0]
+	var rest string
+	if len(parts) == 2 {
+		rest = "/" + parts[1]
+	}
+
+	if rest == "" {
+		rest = "/"
+	}
+
+	return first, rest
+}
+
+func (fs *root) resolveFullPath(path string) (space *storageProvider.StorageSpace, relPath string, err error) {
+	spaces, err := fs.listStorageSpaces()
+	if err != nil {
+		return nil, "", err
+	}
+
+	spaceName, relPath := splitPath(path)
+
+	for k := range spaces {
+		if spaces[k].GetName() == spaceName {
+			space = spaces[k]
+			return
+		}
+	}
+
+	return nil, "", nil
+
+}
+
 func (fs *root) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 
 	_ = r.WithContext(r.Context()) // initialize context for deadlock testing
@@ -470,37 +514,140 @@ func (fs *root) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 
 	switch r.Method {
 	case "List":
-		spaces, err := fs.listStorageSpaces()
+		if r.Filepath == "/" {
+			spaces, err := fs.listStorageSpaces()
+			if err != nil {
+				return nil, err
+			}
+
+			var files = []os.FileInfo{}
+			for k := range spaces {
+				mode := os.FileMode(0775)
+				mode |= os.ModeDir
+
+				f := fileInfo{
+					name:  spaces[k].GetName(),
+					size:  0,
+					mode:  mode,
+					isDir: true,
+					sys:   spaces[k],
+				}
+
+				if spaces[k].GetMtime() != nil {
+					f.mtime = time.Unix(int64(spaces[k].GetMtime().Seconds), 0)
+				}
+
+				files = append(files, f)
+
+			}
+
+			return listerat(files), nil
+		}
+
+		spc, relPath, err := fs.resolveFullPath(r.Filepath)
 		if err != nil {
 			return nil, err
 		}
 
-		var files = []os.FileInfo{}
+		ref, err := MakeStorageSpaceReference(spc.Id.GetOpaqueId(), relPath)
+		if err != nil {
+			return nil, err
+		}
 
-		for k := range spaces {
-			f := fileInfo{
-				name:  spaces[k].GetName(),
-				size:  0,
-				mode:  0777,
-				isDir: true,
-				sys:   spaces[k],
+		client, err := fs.gwSelector.Next()
+		if err != nil {
+			return nil, err
+		}
+
+		listResp, err := client.ListContainer(fs.authCtx, &storageProvider.ListContainerRequest{
+			Ref: &ref,
+		})
+
+		if err != nil {
+			return nil, err
+		}
+
+		infos := listResp.GetInfos()
+
+		var files = []os.FileInfo{}
+		for i := range infos {
+
+			mode := os.FileMode(0775)
+			if infos[i].GetType() == storageProvider.ResourceType_RESOURCE_TYPE_CONTAINER {
+				mode |= os.ModeDir
 			}
 
-			if spaces[k].GetMtime() != nil {
-				f.mtime = time.Unix(int64(spaces[k].GetMtime().Seconds), 0)
+			f := fileInfo{
+				name:  infos[i].GetName(),
+				size:  int64(infos[i].GetSize()),
+				mode:  mode,
+				isDir: infos[i].GetType() == storageProvider.ResourceType_RESOURCE_TYPE_CONTAINER,
+				sys:   infos[i],
+			}
+
+			if infos[i].GetMtime() != nil {
+				f.mtime = time.Unix(int64(infos[i].GetMtime().Seconds), 0)
 			}
 
 			files = append(files, f)
-
 		}
 
 		return listerat(files), nil
+
 	case "Stat":
-		file, err := fs.fetch(r.Filepath)
+
+		spc, relPath, err := fs.resolveFullPath(r.Filepath)
 		if err != nil {
 			return nil, err
 		}
+
+		client, err := fs.gwSelector.Next()
+		if err != nil {
+			return nil, err
+		}
+
+		ref, err := MakeStorageSpaceReference(spc.Id.GetOpaqueId(), relPath)
+		if err != nil {
+			return nil, err
+		}
+
+		statResp, err := client.Stat(fs.authCtx, &storageProvider.StatRequest{
+			Ref: &ref,
+		})
+
+		if err != nil {
+			return nil, err
+		}
+
+		info := statResp.GetInfo()
+
+		mode := os.FileMode(0775)
+		if info.GetType() == storageProvider.ResourceType_RESOURCE_TYPE_CONTAINER {
+			mode |= os.ModeDir
+		}
+
+		file := fileInfo{
+			name:  info.GetName(),
+			size:  int64(info.GetSize()),
+			mode:  mode,
+			isDir: info.GetType() == storageProvider.ResourceType_RESOURCE_TYPE_CONTAINER,
+		}
+
+		if info.GetMtime() != nil {
+			file.mtime = time.Unix(int64(info.GetMtime().Seconds), 0)
+		}
+
 		return listerat{file}, nil
+
+		/*
+			file, err := fs.fetch(r.Filepath)
+			if err != nil {x
+				return nil, err
+			}
+			return listerat{file}, nil
+
+		*/
+
 	}
 
 	return nil, errors.New("unsupported")
