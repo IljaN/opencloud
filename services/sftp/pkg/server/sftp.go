@@ -7,11 +7,11 @@ import (
 	gatewayv1beta1 "github.com/cs3org/go-cs3apis/cs3/gateway/v1beta1"
 	userpb "github.com/cs3org/go-cs3apis/cs3/identity/user/v1beta1"
 	rpc "github.com/cs3org/go-cs3apis/cs3/rpc/v1beta1"
-	providerv1beta1 "github.com/cs3org/go-cs3apis/cs3/storage/provider/v1beta1"
 	"github.com/gliderlabs/ssh"
 	"github.com/opencloud-eu/opencloud/pkg/log"
 	"github.com/opencloud-eu/opencloud/pkg/registry"
 	sftpSvrCfg "github.com/opencloud-eu/opencloud/services/sftp/pkg/config"
+	"github.com/opencloud-eu/opencloud/services/sftp/pkg/vfs"
 	ctxpkg "github.com/opencloud-eu/reva/v2/pkg/ctx"
 	"github.com/opencloud-eu/reva/v2/pkg/rgrpc/todo/pool"
 	"github.com/pkg/sftp"
@@ -49,38 +49,35 @@ func NewSFTPServer(cfg *sftpSvrCfg.Config, logger log.Logger) *SFTPServer {
 
 // SFTPHandler handler for SFTP subsystem
 func (s *SFTPServer) SFTPHandler(sess ssh.Session) {
-	server := sftp.NewRequestServer(
-		sess,
-		sftp.InMemHandler(),
-	)
+	/*
+		gwapi, err := s.gwSelector.Next()
+		if err != nil {
+			s.log.Err(err).Msg("Failed to get gateway client")
+		}
 
-	gwapi, err := s.gwSelector.Next()
-	if err != nil {
-		s.log.Err(err).Msg("Failed to get gateway client")
-	}
+	*/
+
+	s.gwSelector.Next()
 
 	uid, ok := sess.Context().Value("uid").(*userpb.UserId)
 	if !ok {
-		s.log.Err(err).Msg("Failed to get uid from ctx")
+		s.log.Error().Msg("Failed to get uid from ctx")
 		return
 	}
 
 	token, ok := sess.Context().Value("token").(string)
 	if !ok {
-		s.log.Err(err).Msg("Failed to get token from ctx")
+		s.log.Error().Msg("Failed to get token from ctx")
 		return
 	}
 
-	granteeCtx := ctxpkg.ContextSetUser(context.Background(), &userpb.User{Id: uid})
-	granteeCtx = metadata.AppendToOutgoingContext(granteeCtx, ctxpkg.TokenHeader, token)
+	authCtx := ctxpkg.ContextSetUser(context.Background(), &userpb.User{Id: uid})
+	authCtx = metadata.AppendToOutgoingContext(authCtx, ctxpkg.TokenHeader, token)
 
-	// Get Home Path
-	homeResp, err := gwapi.GetHome(granteeCtx, &providerv1beta1.GetHomeRequest{})
-	if err != nil {
-		panic(err)
-	}
-
-	fmt.Println(homeResp.String())
+	server := sftp.NewRequestServer(
+		sess,
+		vfs.OpenCloudHandler(authCtx, s.gwSelector),
+	)
 
 	if err := server.Serve(); err == io.EOF {
 		server.Close()
