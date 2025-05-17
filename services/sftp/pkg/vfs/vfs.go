@@ -486,14 +486,8 @@ func splitPath(path string) (string, string) {
 	return first, rest
 }
 
-func (fs *root) resolveFullPath(path string) (space *storageProvider.StorageSpace, relPath string, err error) {
-	spaces, err := fs.listStorageSpaces()
-	if err != nil {
-		return nil, "", err
-	}
-
+func (fs *root) findSpaceForPath(path string, spaces []*storageProvider.StorageSpace) (space *storageProvider.StorageSpace, relPath string, err error) {
 	spaceName, relPath := splitPath(path)
-
 	for k := range spaces {
 		if spaces[k].GetName() == spaceName {
 			space = spaces[k]
@@ -506,45 +500,22 @@ func (fs *root) resolveFullPath(path string) (space *storageProvider.StorageSpac
 }
 
 func (fs *root) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
-
 	_ = r.WithContext(r.Context()) // initialize context for deadlock testing
-
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
+
+	storageSpaces, err := fs.listStorageSpaces()
+	if err != nil {
+		return nil, err
+	}
 
 	switch r.Method {
 	case "List":
 		if r.Filepath == "/" {
-			spaces, err := fs.listStorageSpaces()
-			if err != nil {
-				return nil, err
-			}
-
-			var files = []os.FileInfo{}
-			for k := range spaces {
-				mode := os.FileMode(0775)
-				mode |= os.ModeDir
-
-				f := fileInfo{
-					name:  spaces[k].GetName(),
-					size:  0,
-					mode:  mode,
-					isDir: true,
-					sys:   spaces[k],
-				}
-
-				if spaces[k].GetMtime() != nil {
-					f.mtime = time.Unix(int64(spaces[k].GetMtime().Seconds), 0)
-				}
-
-				files = append(files, f)
-
-			}
-
-			return listerat(files), nil
+			return storageSpacesToFileInfo(storageSpaces), nil
 		}
 
-		spc, relPath, err := fs.resolveFullPath(r.Filepath)
+		spc, relPath, err := fs.findSpaceForPath(r.Filepath, storageSpaces)
 		if err != nil {
 			return nil, err
 		}
@@ -568,35 +539,9 @@ func (fs *root) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 		}
 
 		infos := listResp.GetInfos()
-
-		var files = []os.FileInfo{}
-		for i := range infos {
-
-			mode := os.FileMode(0775)
-			if infos[i].GetType() == storageProvider.ResourceType_RESOURCE_TYPE_CONTAINER {
-				mode |= os.ModeDir
-			}
-
-			f := fileInfo{
-				name:  infos[i].GetName(),
-				size:  int64(infos[i].GetSize()),
-				mode:  mode,
-				isDir: infos[i].GetType() == storageProvider.ResourceType_RESOURCE_TYPE_CONTAINER,
-				sys:   infos[i],
-			}
-
-			if infos[i].GetMtime() != nil {
-				f.mtime = time.Unix(int64(infos[i].GetMtime().Seconds), 0)
-			}
-
-			files = append(files, f)
-		}
-
-		return listerat(files), nil
-
+		return resourcesToFileInfos(infos), nil
 	case "Stat":
-
-		spc, relPath, err := fs.resolveFullPath(r.Filepath)
+		spc, relPath, err := fs.findSpaceForPath(r.Filepath, storageSpaces)
 		if err != nil {
 			return nil, err
 		}
@@ -619,38 +564,66 @@ func (fs *root) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 			return nil, err
 		}
 
-		info := statResp.GetInfo()
-
-		mode := os.FileMode(0775)
-		if info.GetType() == storageProvider.ResourceType_RESOURCE_TYPE_CONTAINER {
-			mode |= os.ModeDir
-		}
-
-		file := fileInfo{
-			name:  info.GetName(),
-			size:  int64(info.GetSize()),
-			mode:  mode,
-			isDir: info.GetType() == storageProvider.ResourceType_RESOURCE_TYPE_CONTAINER,
-		}
-
-		if info.GetMtime() != nil {
-			file.mtime = time.Unix(int64(info.GetMtime().Seconds), 0)
-		}
-
-		return listerat{file}, nil
-
-		/*
-			file, err := fs.fetch(r.Filepath)
-			if err != nil {x
-				return nil, err
-			}
-			return listerat{file}, nil
-
-		*/
+		fi := resourceToFileInfo(statResp.GetInfo())
+		return listerat{fi}, nil
 
 	}
 
 	return nil, errors.New("unsupported")
+}
+
+func resourcesToFileInfos(rinfos []*storageProvider.ResourceInfo) sftp.ListerAt {
+	var fileInfos = []os.FileInfo{}
+	for i := range rinfos {
+		fileInfos = append(fileInfos, resourceToFileInfo(rinfos[i]))
+	}
+
+	return listerat(fileInfos)
+}
+
+func resourceToFileInfo(ri *storageProvider.ResourceInfo) os.FileInfo {
+	fi := fileInfo{
+		name: ri.GetName(),
+		size: int64(ri.GetSize()),
+		sys:  ri,
+	}
+
+	mode := os.FileMode(0775)
+	if ri.GetType() == storageProvider.ResourceType_RESOURCE_TYPE_CONTAINER {
+		mode |= os.ModeDir
+		fi.mode = mode
+		fi.isDir = true
+	}
+
+	if ri.GetMtime() != nil {
+		fi.mtime = time.Unix(int64(ri.GetMtime().Seconds), 0)
+	}
+
+	return fi
+}
+
+func storageSpacesToFileInfo(spaces []*storageProvider.StorageSpace) sftp.ListerAt {
+	var files = []os.FileInfo{}
+	for k := range spaces {
+		mode := os.FileMode(0775)
+		mode |= os.ModeDir
+		f := fileInfo{
+			name:  spaces[k].GetName(),
+			mode:  mode,
+			isDir: true,
+			sys:   spaces[k],
+		}
+
+		if spaces[k].GetMtime() != nil {
+			f.mtime = time.Unix(int64(spaces[k].GetMtime().Seconds), 0)
+		}
+
+		files = append(files, f)
+
+	}
+
+	return listerat(files)
+
 }
 
 func (fs *root) readdir(pathname string) ([]os.FileInfo, error) {
