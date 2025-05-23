@@ -11,7 +11,6 @@ import (
 	rpc "github.com/cs3org/go-cs3apis/cs3/rpc/v1beta1"
 	storageProvider "github.com/cs3org/go-cs3apis/cs3/storage/provider/v1beta1"
 	"github.com/opencloud-eu/reva/v2/pkg/rgrpc/todo/pool"
-	"github.com/opencloud-eu/reva/v2/pkg/utils"
 	"github.com/pkg/sftp"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"io"
@@ -588,11 +587,12 @@ func resourceToFileInfo(ri *storageProvider.ResourceInfo) os.FileInfo {
 		sys:  ri,
 	}
 
-	mode := os.FileMode(0775)
 	if ri.GetType() == storageProvider.ResourceType_RESOURCE_TYPE_CONTAINER {
-		mode |= os.ModeDir
-		fi.mode = mode
+		fi.mode = os.FileMode(0755) | os.ModeDir
 		fi.isDir = true
+	} else {
+		fi.mode = os.FileMode(0644)
+		fi.isDir = false
 	}
 
 	if ri.GetMtime() != nil {
