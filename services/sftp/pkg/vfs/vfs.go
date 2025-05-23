@@ -511,7 +511,8 @@ func (fs *root) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 	switch r.Method {
 	case "List":
 		if r.Filepath == "/" {
-			return storageSpacesToFileInfo(storageSpaces), nil
+			finfos := storageSpacesToFileInfo(storageSpaces)
+			return listerat(finfos), nil
 		}
 
 		spc, relPath, err := fs.findSpaceForPath(r.Filepath, storageSpaces)
@@ -538,7 +539,8 @@ func (fs *root) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 		}
 
 		infos := listResp.GetInfos()
-		return resourcesToFileInfos(infos), nil
+		finfos := resourcesToFileInfos(infos)
+		return listerat(finfos), nil
 	case "Stat":
 		spc, relPath, err := fs.findSpaceForPath(r.Filepath, storageSpaces)
 		if err != nil {
@@ -571,13 +573,13 @@ func (fs *root) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 	return nil, errors.New("unsupported")
 }
 
-func resourcesToFileInfos(rinfos []*storageProvider.ResourceInfo) sftp.ListerAt {
+func resourcesToFileInfos(rinfos []*storageProvider.ResourceInfo) []os.FileInfo {
 	var fileInfos = []os.FileInfo{}
 	for i := range rinfos {
 		fileInfos = append(fileInfos, resourceToFileInfo(rinfos[i]))
 	}
 
-	return listerat(fileInfos)
+	return fileInfos
 }
 
 func resourceToFileInfo(ri *storageProvider.ResourceInfo) os.FileInfo {
@@ -602,7 +604,7 @@ func resourceToFileInfo(ri *storageProvider.ResourceInfo) os.FileInfo {
 	return fi
 }
 
-func storageSpacesToFileInfo(spaces []*storageProvider.StorageSpace) sftp.ListerAt {
+func storageSpacesToFileInfo(spaces []*storageProvider.StorageSpace) []os.FileInfo {
 	var files = []os.FileInfo{}
 	for k := range spaces {
 		mode := os.FileMode(0775)
@@ -622,7 +624,7 @@ func storageSpacesToFileInfo(spaces []*storageProvider.StorageSpace) sftp.Lister
 
 	}
 
-	return listerat(files)
+	return files
 
 }
 
