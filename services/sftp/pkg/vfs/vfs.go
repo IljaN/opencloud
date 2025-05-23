@@ -446,9 +446,9 @@ func (fs *root) listStorageSpaces() ([]*storageProvider.StorageSpace, error) {
 	}
 
 	// list all providers at or below the given path
-	lSSReq.Opaque = utils.AppendPlainToOpaque(lSSReq.Opaque, "path", "/")
+	//lSSReq.Opaque = utils.AppendPlainToOpaque(lSSReq.Opaque, "path", "/")
 	// we want to get all metadata? really? when looking up the space roots we actually only want etag, mtime and type so we can construct a child ...
-	lSSReq.Opaque = utils.AppendPlainToOpaque(lSSReq.Opaque, "metadata", "*")
+	//lSSReq.Opaque = utils.AppendPlainToOpaque(lSSReq.Opaque, "metadata", "*")
 
 	lSSRes, err := client.ListStorageSpaces(fs.authCtx, lSSReq)
 	if err != nil {
