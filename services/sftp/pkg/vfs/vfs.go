@@ -441,7 +441,6 @@ func (fs *root) listStorageSpaces() ([]*storageProvider.StorageSpace, error) {
 	}
 
 	lSSReq := &storageProvider.ListStorageSpacesRequest{
-		// get all fields, including root_info
 		FieldMask: &fieldmaskpb.FieldMask{Paths: []string{"*"}},
 	}
 
@@ -520,6 +519,10 @@ func (fs *root) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 			return nil, err
 		}
 
+		if spc == nil {
+			return nil, os.ErrNotExist
+		}
+
 		ref, err := MakeStorageSpaceReference(spc.Id.GetOpaqueId(), relPath)
 		if err != nil {
 			return nil, err
@@ -545,6 +548,10 @@ func (fs *root) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 		spc, relPath, err := fs.findSpaceForPath(r.Filepath, storageSpaces)
 		if err != nil {
 			return nil, err
+		}
+
+		if spc == nil {
+			return nil, os.ErrNotExist
 		}
 
 		client, err := fs.gwSelector.Next()
@@ -662,23 +669,6 @@ func (fs *root) Readlink(pathname string) (string, error) {
 	}
 
 	return file.symlink, nil
-}
-
-// implements LstatFileLister interface
-func (fs *root) Lstat(r *sftp.Request) (sftp.ListerAt, error) {
-	if fs.mockErr != nil {
-		return nil, fs.mockErr
-	}
-	_ = r.WithContext(r.Context()) // initialize context for deadlock testing
-
-	fs.mu.Lock()
-	defer fs.mu.Unlock()
-
-	file, err := fs.lfetch(r.Filepath)
-	if err != nil {
-		return nil, err
-	}
-	return listerat{file}, nil
 }
 
 // Set a mocked error that the next handler call will return.
