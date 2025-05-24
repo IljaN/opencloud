@@ -362,15 +362,6 @@ func (fs *root) StatVFS(r *sftp.Request) (*sftp.StatVFS, error) {
 	return nil, nil
 }
 
-func (fs *root) mkdir(pathname string) error {
-	dir := &memFile{
-		modtime: time.Now(),
-		isdir:   true,
-	}
-
-	return fs.putfile(pathname, dir)
-}
-
 func (fs *root) rmdir(pathname string) error {
 	// IEEE 1003.1: If pathname is a symlink, then rmdir should fail with ENOTDIR.
 	dir, err := fs.lfetch(pathname)
