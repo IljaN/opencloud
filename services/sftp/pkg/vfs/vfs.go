@@ -77,15 +77,56 @@ func (fs *root) Filewrite(r *sftp.Request) (io.WriterAt, error) {
 }
 
 func (fs *root) OpenFile(r *sftp.Request) (sftp.WriterAtReaderAt, error) {
-	if fs.mockErr != nil {
-		return nil, fs.mockErr
-	}
 	_ = r.WithContext(r.Context()) // initialize context for deadlock testing
 
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
-	return fs.openfile(r.Filepath, r.Flags)
+	fs.log.Debug().
+		Str("path", r.Filepath).
+		Uint32("flags", r.Flags).
+		Msg("OpenFile called")
+
+	storageSpaces, err := fs.listStorageSpaces()
+	if err != nil {
+		return nil, err
+	}
+
+	spc, relPath, err := fs.findSpaceForPath(r.Filepath, storageSpaces)
+	if err != nil {
+		return nil, err
+	}
+
+	if spc == nil {
+		return nil, os.ErrNotExist
+	}
+
+	ref, err := MakeStorageSpaceReference(spc.Id.GetOpaqueId(), relPath)
+	if err != nil {
+		fs.log.Debug().Err(err).Msg("MakeStorageSpaceReference error in OpenFile")
+		return nil, err
+	}
+
+	// Create file if it doesn't exist and flags indicate creation
+	flags := r.Pflags()
+	if flags.Write && (flags.Creat || flags.Trunc) {
+		client, err := fs.gwSelector.Next()
+		if err != nil {
+			return nil, err
+		}
+
+		// Touch the file to ensure it exists
+		_, err = client.TouchFile(fs.authCtx, &storageProvider.TouchFileRequest{
+			Ref: &storageProvider.Reference{ResourceId: ref.GetResourceId(), Path: relPath},
+		})
+		if err != nil {
+			fs.log.Debug().Err(err).Msg("TouchFile error in OpenFile")
+			// Ignore error - file might already exist
+		}
+	}
+
+	// Return the file handler that implements WriterAt and ReaderAt
+	return newSftpFileHandler(fs, &ref, r.Filepath, r.Flags), nil
 }
 
 func (fs *root) putfile(pathname string, file *memFile) error {
