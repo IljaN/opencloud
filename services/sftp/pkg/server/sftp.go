@@ -49,14 +49,6 @@ func NewSFTPServer(cfg *sftpSvrCfg.Config, logger log.Logger) *SFTPServer {
 
 // SFTPHandler handler for SFTP subsystem
 func (s *SFTPServer) SFTPHandler(sess ssh.Session) {
-	/*
-		gwapi, err := s.gwSelector.Next()
-		if err != nil {
-			s.log.Err(err).Msg("Failed to get gateway client")
-		}
-
-	*/
-
 	s.gwSelector.Next()
 
 	uid, ok := sess.Context().Value("uid").(*userpb.UserId)
@@ -74,9 +66,10 @@ func (s *SFTPServer) SFTPHandler(sess ssh.Session) {
 	authCtx := ctxpkg.ContextSetUser(context.Background(), &userpb.User{Id: uid})
 	authCtx = metadata.AppendToOutgoingContext(authCtx, ctxpkg.TokenHeader, token)
 
+	vfsLogger := s.log.With().Str("subsystem", "vfs").Logger()
 	server := sftp.NewRequestServer(
 		sess,
-		vfs.OpenCloudHandler(authCtx, s.gwSelector),
+		vfs.OpenCloudHandler(authCtx, s.gwSelector, vfsLogger),
 	)
 
 	if err := server.Serve(); err == io.EOF {

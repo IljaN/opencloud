@@ -7,11 +7,13 @@ package vfs
 import (
 	"context"
 	"errors"
+	"fmt"
 	gateway "github.com/cs3org/go-cs3apis/cs3/gateway/v1beta1"
 	rpc "github.com/cs3org/go-cs3apis/cs3/rpc/v1beta1"
 	storageProvider "github.com/cs3org/go-cs3apis/cs3/storage/provider/v1beta1"
 	"github.com/opencloud-eu/reva/v2/pkg/rgrpc/todo/pool"
 	"github.com/pkg/sftp"
+	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"io"
 
@@ -29,13 +31,16 @@ const maxSymlinkFollows = 5
 
 var errTooManySymlinks = errors.New("too many symbolic links")
 
-func OpenCloudHandler(authCtx context.Context, sel *pool.Selector[gateway.GatewayAPIClient]) sftp.Handlers {
+func OpenCloudHandler(authCtx context.Context, sel *pool.Selector[gateway.GatewayAPIClient], logger zerolog.Logger) sftp.Handlers {
 	root := &root{
 		rootFile:   &memFile{name: "/", modtime: time.Now(), isdir: true},
 		files:      make(map[string]*memFile),
 		authCtx:    authCtx,
 		gwSelector: sel,
+		log:        logger,
 	}
+
+	root.log.Debug().Msg("Initializing sftp vfs")
 	return sftp.Handlers{root, root, root, root}
 }
 
@@ -48,6 +53,7 @@ type root struct {
 	files      map[string]*memFile
 	authCtx    context.Context
 	gwSelector *pool.Selector[gateway.GatewayAPIClient]
+	log        zerolog.Logger
 }
 
 // Example Handlers
@@ -486,13 +492,22 @@ func splitPath(path string) (string, string) {
 
 func (fs *root) findSpaceForPath(path string, spaces []*storageProvider.StorageSpace) (space *storageProvider.StorageSpace, relPath string, err error) {
 	spaceName, relPath := splitPath(path)
+
+	fs.log.Debug().
+		Str("path", path).
+		Str("spaceName", spaceName).
+		Str("relPath", relPath).
+		Msg("Resolving path to space and rel-path")
+
 	for k := range spaces {
 		if spaces[k].GetName() == spaceName {
 			space = spaces[k]
+			fs.log.Debug().Msgf("Found storage space %s", spaceName)
 			return
 		}
 	}
 
+	fs.log.Debug().Msgf("Space '%s' not found", spaceName)
 	return nil, "", nil
 
 }
@@ -501,6 +516,11 @@ func (fs *root) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 	_ = r.WithContext(r.Context()) // initialize context for deadlock testing
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
+
+	fs.log.Debug().
+		Str("method", r.Method).
+		Str("file-path", r.Filepath).
+		Msg("Filelist called")
 
 	storageSpaces, err := fs.listStorageSpaces()
 	if err != nil {
@@ -525,23 +545,39 @@ func (fs *root) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 
 		ref, err := MakeStorageSpaceReference(spc.Id.GetOpaqueId(), relPath)
 		if err != nil {
+			fs.log.Debug().Err(err).Msg("MakeStorageSpaceReference error")
 			return nil, err
 		}
+		fs.log.Debug().
+			Str("spaceId", spc.Id.GetOpaqueId()).
+			Str("path", relPath).
+			Msg("Created ref with space ID")
 
 		client, err := fs.gwSelector.Next()
 		if err != nil {
 			return nil, err
 		}
 
+		fs.log.Debug().Msg("Calling 'ListContainer'")
 		listResp, err := client.ListContainer(fs.authCtx, &storageProvider.ListContainerRequest{
 			Ref: &ref,
 		})
 
 		if err != nil {
+			fs.log.Debug().Err(err).Msg("ListContainer error")
 			return nil, err
 		}
 
+		if listResp.GetStatus().GetCode() != rpc.Code_CODE_OK {
+			fs.log.Debug().
+				Str("code", listResp.GetStatus().GetCode().String()).
+				Str("message", listResp.GetStatus().GetMessage()).
+				Msg("ListContainer status not OK")
+			return nil, fmt.Errorf("list container failed: %s", listResp.GetStatus().GetMessage())
+		}
+
 		infos := listResp.GetInfos()
+		fs.log.Debug().Int("itemCount", len(infos)).Msg("ListContainer returned items")
 		finfos := resourcesToFileInfos(infos)
 		return listerat(finfos), nil
 	case "Stat":
