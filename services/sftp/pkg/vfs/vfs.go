@@ -658,8 +658,8 @@ func (fs *root) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 
 		infos := listResp.GetInfos()
 		fs.log.Debug().Int("itemCount", len(infos)).Msg("ListContainer returned items")
-		finfos := resourcesToFileInfos(infos)
-		return listerat(finfos), nil
+		fileInfos := toFileInfos(infos...)
+		return listerat(fileInfos), nil
 	case "Stat":
 		spc, relPath, err := fs.findSpaceForPath(r.Filepath, storageSpaces)
 		if err != nil {
@@ -688,43 +688,38 @@ func (fs *root) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 			return nil, err
 		}
 
-		fi := resourceToFileInfo(statResp.GetInfo())
-		return listerat{fi}, nil
+		fi := toFileInfos(statResp.GetInfo())
+		return listerat{fi[0]}, nil
 
 	}
 
 	return nil, errors.New("unsupported")
 }
 
-func resourcesToFileInfos(rinfos []*storageProvider.ResourceInfo) []os.FileInfo {
-	var fileInfos = []os.FileInfo{}
-	for i := range rinfos {
-		fileInfos = append(fileInfos, resourceToFileInfo(rinfos[i]))
-	}
+func toFileInfos(rInfos ...*storageProvider.ResourceInfo) []os.FileInfo {
+	var fileInfos []os.FileInfo
+	for _, ri := range rInfos {
+		fi := fileInfo{
+			name: ri.GetName(),
+			size: int64(ri.GetSize()),
+			sys:  ri,
+		}
 
+		if ri.GetType() == storageProvider.ResourceType_RESOURCE_TYPE_CONTAINER {
+			fi.mode = os.FileMode(0755) | os.ModeDir
+			fi.isDir = true
+		} else {
+			fi.mode = os.FileMode(0644)
+			fi.isDir = false
+		}
+
+		if ri.GetMtime() != nil {
+			fi.mtime = time.Unix(int64(ri.GetMtime().Seconds), 0)
+		}
+
+		fileInfos = append(fileInfos, fi)
+	}
 	return fileInfos
-}
-
-func resourceToFileInfo(ri *storageProvider.ResourceInfo) os.FileInfo {
-	fi := fileInfo{
-		name: ri.GetName(),
-		size: int64(ri.GetSize()),
-		sys:  ri,
-	}
-
-	if ri.GetType() == storageProvider.ResourceType_RESOURCE_TYPE_CONTAINER {
-		fi.mode = os.FileMode(0755) | os.ModeDir
-		fi.isDir = true
-	} else {
-		fi.mode = os.FileMode(0644)
-		fi.isDir = false
-	}
-
-	if ri.GetMtime() != nil {
-		fi.mtime = time.Unix(int64(ri.GetMtime().Seconds), 0)
-	}
-
-	return fi
 }
 
 func storageSpacesToFileInfo(spaces []*storageProvider.StorageSpace) []os.FileInfo {
