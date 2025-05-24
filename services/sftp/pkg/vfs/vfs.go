@@ -1,9 +1,5 @@
 package vfs
 
-// This serves as an example of how to implement the request server handler as
-// well as a dummy backend for testing. It implements an in-memory backend that
-// works as a very simple filesystem with simple flat key-value lookup system.
-
 import (
 	"context"
 	"errors"
@@ -12,6 +8,8 @@ import (
 	rpc "github.com/cs3org/go-cs3apis/cs3/rpc/v1beta1"
 	storageProvider "github.com/cs3org/go-cs3apis/cs3/storage/provider/v1beta1"
 	"github.com/opencloud-eu/reva/v2/pkg/rgrpc/todo/pool"
+	"github.com/opencloud-eu/reva/v2/pkg/storagespace"
+	"github.com/opencloud-eu/reva/v2/pkg/utils"
 	"github.com/pkg/sftp"
 	"github.com/rs/zerolog"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
@@ -19,21 +17,14 @@ import (
 
 	iofs "io/fs"
 	"os"
-	"path"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
 
-const maxSymlinkFollows = 5
-
-var errTooManySymlinks = errors.New("too many symbolic links")
-
 func OpenCloudHandler(authCtx context.Context, sel *pool.Selector[gateway.GatewayAPIClient], logger zerolog.Logger) sftp.Handlers {
 	root := &root{
-		rootFile:   &memFile{name: "/", modtime: time.Now(), isdir: true},
-		files:      make(map[string]*memFile),
 		authCtx:    authCtx,
 		gwSelector: sel,
 		log:        logger,
@@ -45,17 +36,12 @@ func OpenCloudHandler(authCtx context.Context, sel *pool.Selector[gateway.Gatewa
 
 // In memory file-system-y thing that the Hanlders live on
 type root struct {
-	rootFile *memFile
-	mockErr  error
-
 	mu         sync.Mutex
-	files      map[string]*memFile
 	authCtx    context.Context
 	gwSelector *pool.Selector[gateway.GatewayAPIClient]
 	log        zerolog.Logger
 }
 
-// Example Handlers
 func (fs *root) Fileread(r *sftp.Request) (io.ReaderAt, error) {
 	flags := r.Pflags()
 	if !flags.Read {
@@ -101,9 +87,9 @@ func (fs *root) OpenFile(r *sftp.Request) (sftp.WriterAtReaderAt, error) {
 		return nil, os.ErrNotExist
 	}
 
-	ref, err := MakeStorageSpaceReference(spc.Id.GetOpaqueId(), relPath)
+	ref, err := makeStorageSpaceReference(spc.Id.GetOpaqueId(), relPath)
 	if err != nil {
-		fs.log.Debug().Err(err).Msg("MakeStorageSpaceReference error in OpenFile")
+		fs.log.Debug().Err(err).Msg("makeStorageSpaceReference error in OpenFile")
 		return nil, err
 	}
 
@@ -129,99 +115,7 @@ func (fs *root) OpenFile(r *sftp.Request) (sftp.WriterAtReaderAt, error) {
 	return newSftpFileHandler(fs, &ref, r.Filepath, r.Flags), nil
 }
 
-func (fs *root) putfile(pathname string, file *memFile) error {
-	pathname, err := fs.canonName(pathname)
-	if err != nil {
-		return err
-	}
-
-	if !strings.HasPrefix(pathname, "/") {
-		return os.ErrInvalid
-	}
-
-	if _, err := fs.lfetch(pathname); err != os.ErrNotExist {
-		return os.ErrExist
-	}
-
-	file.name = pathname
-	fs.files[pathname] = file
-
-	return nil
-}
-
-func (fs *root) openfile(pathname string, flags uint32) (*memFile, error) {
-	//pflags := newFileOpenFlags(flags)
-
-	file, err := fs.fetch(pathname)
-	if err == os.ErrNotExist {
-		/*
-			if !pflags.Creat {
-				return nil, os.ErrNotExist
-			}
-
-		*/
-
-		var count int
-		// You can create files through dangling symlinks.
-		link, err := fs.lfetch(pathname)
-		for err == nil && link.symlink != "" {
-			/*
-				if pflags.Excl {
-					// unless you also passed in O_EXCL
-					return nil, os.ErrInvalid
-				}
-
-			*/
-
-			if count++; count > maxSymlinkFollows {
-				return nil, errTooManySymlinks
-			}
-
-			pathname = link.symlink
-			link, err = fs.lfetch(pathname)
-		}
-
-		file := &memFile{
-			modtime: time.Now(),
-		}
-
-		if err := fs.putfile(pathname, file); err != nil {
-			return nil, err
-		}
-
-		return file, nil
-	}
-
-	if err != nil {
-		return nil, err
-	}
-	/*
-		if pflags.Creat && pflags.Excl {
-			return nil, os.ErrExist
-		}
-
-	*/
-
-	if file.IsDir() {
-		return nil, os.ErrInvalid
-	}
-	/*
-
-		if pflags.Trunc {
-			if err := file.Truncate(0); err != nil {
-				return nil, err
-			}
-		}
-
-	*/
-
-	return file, nil
-}
-
 func (fs *root) Filecmd(r *sftp.Request) error {
-	if fs.mockErr != nil {
-		return fs.mockErr
-	}
 	_ = r.WithContext(r.Context()) // initialize context for deadlock testing
 
 	fs.mu.Lock()
@@ -229,34 +123,17 @@ func (fs *root) Filecmd(r *sftp.Request) error {
 
 	switch r.Method {
 	case "Setstat":
-		//const sshFxfWrite  = 0x00000002
-		file, err := fs.openfile(r.Filepath, 0x00000002)
-		if err != nil {
-			return err
-		}
-
-		if r.AttrFlags().Size {
-			return file.Truncate(int64(r.Attributes().Size))
-		}
-
-		return nil
-
+		return errors.New("setstat not supported")
 	case "Rename":
 		// SFTP-v2: "It is an error if there already exists a file with the name specified by newpath."
 		// This varies from the POSIX specification, which allows limited replacement of target files.
-		if fs.exists(r.Target) {
-			return os.ErrExist
-		}
-
-		return fs.rename(r.Filepath, r.Target)
-
+		return fs.rename(r.Filepath, r.Target, false)
 	case "Rmdir":
 		return fs.rmdir(r.Filepath)
 	case "Remove":
 		// IEEE 1003.1 remove explicitly can unlink files and remove empty directories.
 		// We use instead here the semantics of unlink, which is allowed to be restricted against directories.
-		return fs.unlink(r.Filepath)
-
+		return fs.remove(r.Filepath)
 	case "Mkdir":
 		storageSpaces, err := fs.listStorageSpaces()
 		if err != nil {
@@ -272,9 +149,9 @@ func (fs *root) Filecmd(r *sftp.Request) error {
 			return os.ErrNotExist
 		}
 
-		ref, err := MakeStorageSpaceReference(spc.Id.GetOpaqueId(), relPath)
+		ref, err := makeStorageSpaceReference(spc.Id.GetOpaqueId(), relPath)
 		if err != nil {
-			fs.log.Debug().Err(err).Msg("MakeStorageSpaceReference error in Mkdir")
+			fs.log.Debug().Err(err).Msg("makeStorageSpaceReference error in Mkdir")
 			return err
 		}
 
@@ -311,163 +188,282 @@ func (fs *root) Filecmd(r *sftp.Request) error {
 		return nil
 
 	case "Link":
-		return fs.link(r.Filepath, r.Target)
-
+		return errors.New("hard links are not supported")
 	case "Symlink":
 		// NOTE: r.Filepath is the target, and r.Target is the linkpath.
-		return fs.symlink(r.Filepath, r.Target)
+		return errors.New("symbolic links are not supported")
 	}
 
 	return errors.New("unsupported")
 }
 
-func (fs *root) rename(oldpath, newpath string) error {
-	file, err := fs.lfetch(oldpath)
+func (fs *root) rename(oldpath, newpath string, allowOverwrite bool) error {
+	return fs.renameFile(oldpath, newpath, allowOverwrite)
+}
+
+func (fs *root) renameFile(oldpath, newpath string, allowOverwrite bool) error {
+	// List storage spaces
+	storageSpaces, err := fs.listStorageSpaces()
 	if err != nil {
 		return err
 	}
 
-	newpath, err = fs.canonName(newpath)
+	// Find space and relative path for source
+	sourceSpc, sourceRelPath, err := fs.findSpaceForPath(oldpath, storageSpaces)
+	if err != nil {
+		return err
+	}
+	if sourceSpc == nil {
+		return os.ErrNotExist
+	}
+
+	// Find space and relative path for target
+	targetSpc, targetRelPath, err := fs.findSpaceForPath(newpath, storageSpaces)
+	if err != nil {
+		return err
+	}
+	if targetSpc == nil {
+		return os.ErrNotExist
+	}
+
+	// Check if source and target are in the same storage space
+	if sourceSpc.Id.GetOpaqueId() != targetSpc.Id.GetOpaqueId() {
+		// Cross-space moves are not supported in this implementation
+		return fmt.Errorf("cross-space moves are not supported")
+	}
+
+	// Create source reference
+	sourceRef, err := makeStorageSpaceReference(sourceSpc.Id.GetOpaqueId(), sourceRelPath)
+	if err != nil {
+		fs.log.Debug().Err(err).Msg("makeStorageSpaceReference error for source in rename")
+		return err
+	}
+
+	// Create target reference
+	targetRef, err := makeStorageSpaceReference(targetSpc.Id.GetOpaqueId(), targetRelPath)
+	if err != nil {
+		fs.log.Debug().Err(err).Msg("makeStorageSpaceReference error for target in rename")
+		return err
+	}
+
+	client, err := fs.gwSelector.Next()
 	if err != nil {
 		return err
 	}
 
-	if !strings.HasPrefix(newpath, "/") {
-		return os.ErrInvalid
+	// For SFTP rename (not POSIX), we need to check if target exists
+	if !allowOverwrite {
+		// Check if target already exists
+		statResp, err := client.Stat(fs.authCtx, &storageProvider.StatRequest{
+			Ref: &targetRef,
+		})
+		if err == nil && statResp.GetStatus().GetCode() == rpc.Code_CODE_OK {
+			// Target exists, which is an error for SFTP rename
+			return os.ErrExist
+		}
+		// If stat returned not found, that's what we want - continue with rename
 	}
 
-	target, err := fs.lfetch(newpath)
-	if err != os.ErrNotExist {
-		if target == file {
-			// IEEE 1003.1: if oldpath and newpath are the same directory entry,
-			// then return no error, and perform no further action.
-			return nil
-		}
-
-		switch {
-		case file.IsDir():
-			// IEEE 1003.1: if oldpath is a directory, and newpath exists,
-			// then newpath must be a directory, and empty.
-			// It is to be removed prior to rename.
-			if err := fs.rmdir(newpath); err != nil {
-				return err
-			}
-
-		case target.IsDir():
-			// IEEE 1003.1: if oldpath is not a directory, and newpath exists,
-			// then newpath may not be a directory.
-			return syscall.EISDIR
-		}
+	// Perform the move/rename operation
+	moveResp, err := client.Move(fs.authCtx, &storageProvider.MoveRequest{
+		Source:      &sourceRef,
+		Destination: &targetRef,
+	})
+	if err != nil {
+		return err
 	}
 
-	fs.files[newpath] = file
-
-	if file.IsDir() {
-		dirprefix := file.name + "/"
-
-		for name, file := range fs.files {
-			if strings.HasPrefix(name, dirprefix) {
-				newname := path.Join(newpath, strings.TrimPrefix(name, dirprefix))
-
-				fs.files[newname] = file
-				file.name = newname
-				delete(fs.files, name)
-			}
+	if moveResp.GetStatus().GetCode() != rpc.Code_CODE_OK {
+		switch moveResp.GetStatus().GetCode() {
+		case rpc.Code_CODE_NOT_FOUND:
+			return os.ErrNotExist
+		case rpc.Code_CODE_ALREADY_EXISTS:
+			return os.ErrExist
+		case rpc.Code_CODE_PERMISSION_DENIED:
+			return os.ErrPermission
+		default:
+			err := fmt.Errorf("move failed: %s", moveResp.GetStatus().GetMessage())
+			fs.log.Debug().
+				Err(err).
+				Str("sourcePath", oldpath).
+				Str("targetPath", newpath).
+				Str("code", moveResp.GetStatus().GetCode().String()).
+				Msg("Could not move/rename file")
+			return err
 		}
 	}
-
-	file.name = newpath
-	delete(fs.files, oldpath)
 
 	return nil
 }
 
 func (fs *root) PosixRename(r *sftp.Request) error {
-	if fs.mockErr != nil {
-		return fs.mockErr
-	}
 	_ = r.WithContext(r.Context()) // initialize context for deadlock testing
 
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 
-	return fs.rename(r.Filepath, r.Target)
+	// POSIX rename allows overwriting existing files
+	return fs.rename(r.Filepath, r.Target, true)
 }
 
 func (fs *root) StatVFS(r *sftp.Request) (*sftp.StatVFS, error) {
-	if fs.mockErr != nil {
-		return nil, fs.mockErr
-	}
-
-	return nil, nil
+	return nil, errors.New("StatVFS not supported")
 }
 
-func (fs *root) rmdir(pathname string) error {
-	// IEEE 1003.1: If pathname is a symlink, then rmdir should fail with ENOTDIR.
-	dir, err := fs.lfetch(pathname)
+func (fs *root) remove(pathname string) error {
+	storageSpaces, err := fs.listStorageSpaces()
 	if err != nil {
 		return err
 	}
 
-	if !dir.IsDir() {
-		return syscall.ENOTDIR
+	spc, relPath, err := fs.findSpaceForPath(pathname, storageSpaces)
+	if err != nil {
+		return err
 	}
 
-	// use the dir‘s internal name not the pathname we passed in.
-	// the dir.name is always the canonical name of a directory.
-	pathname = dir.name
+	if spc == nil {
+		return os.ErrNotExist
+	}
 
-	for name := range fs.files {
-		if path.Dir(name) == pathname {
-			return errors.New("directory not empty")
+	// First stat the file to check if it's a directory
+	ref, err := makeStorageSpaceReference(spc.Id.GetOpaqueId(), relPath)
+	if err != nil {
+		fs.log.Debug().Err(err).Msg("makeStorageSpaceReference error in remove")
+		return err
+	}
+
+	client, err := fs.gwSelector.Next()
+	if err != nil {
+		return err
+	}
+
+	statResp, err := client.Stat(fs.authCtx, &storageProvider.StatRequest{
+		Ref: &ref,
+	})
+	if err != nil {
+		return err
+	}
+
+	if statResp.GetStatus().GetCode() != rpc.Code_CODE_OK {
+		if statResp.GetStatus().GetCode() == rpc.Code_CODE_NOT_FOUND {
+			return os.ErrNotExist
 		}
+		return fmt.Errorf("stat failed: %s", statResp.GetStatus().GetMessage())
 	}
 
-	delete(fs.files, pathname)
-
-	return nil
-}
-
-func (fs *root) link(oldpath, newpath string) error {
-	file, err := fs.lfetch(oldpath)
-	if err != nil {
-		return err
-	}
-
-	if file.IsDir() {
-		return errors.New("hard link not allowed for directory")
-	}
-
-	return fs.putfile(newpath, file)
-}
-
-// symlink() creates a symbolic link named `linkpath` which contains the string `target`.
-// NOTE! This would be called with `symlink(req.Filepath, req.Target)` due to different semantics.
-func (fs *root) symlink(target, linkpath string) error {
-	link := &memFile{
-		modtime: time.Now(),
-		symlink: target,
-	}
-
-	return fs.putfile(linkpath, link)
-}
-
-func (fs *root) unlink(pathname string) error {
-	// does not follow symlinks!
-	file, err := fs.lfetch(pathname)
-	if err != nil {
-		return err
-	}
-
-	if file.IsDir() {
+	// Check if it's a directory
+	if statResp.GetInfo().GetType() == storageProvider.ResourceType_RESOURCE_TYPE_CONTAINER {
 		// IEEE 1003.1: implementations may opt out of allowing the unlinking of directories.
 		// SFTP-v2: SSH_FXP_REMOVE may not remove directories.
 		return os.ErrInvalid
 	}
 
-	// DO NOT use the file’s internal name.
-	// because of hard-links files cannot have a single canonical name.
-	delete(fs.files, pathname)
+	// Delete the file
+	deleteResp, err := client.Delete(fs.authCtx, &storageProvider.DeleteRequest{
+		Ref: &ref,
+	})
+	if err != nil {
+		return err
+	}
+
+	if deleteResp.GetStatus().GetCode() != rpc.Code_CODE_OK {
+		if deleteResp.GetStatus().GetCode() == rpc.Code_CODE_NOT_FOUND {
+			return os.ErrNotExist
+		}
+		err = fmt.Errorf("delete failed: %s", deleteResp.GetStatus().GetMessage())
+		fs.log.Debug().
+			Err(err).
+			Str("path", pathname).
+			Str("code", deleteResp.GetStatus().GetCode().String()).
+			Msg("Could not delete file")
+		return err
+	}
+
+	return nil
+}
+
+func (fs *root) rmdir(pathname string) error {
+	storageSpaces, err := fs.listStorageSpaces()
+	if err != nil {
+		return err
+	}
+
+	spc, relPath, err := fs.findSpaceForPath(pathname, storageSpaces)
+	if err != nil {
+		return err
+	}
+
+	if spc == nil {
+		return os.ErrNotExist
+	}
+
+	ref, err := makeStorageSpaceReference(spc.Id.GetOpaqueId(), relPath)
+	if err != nil {
+		fs.log.Debug().Err(err).Msg("makeStorageSpaceReference error in rmdir")
+		return err
+	}
+
+	client, err := fs.gwSelector.Next()
+	if err != nil {
+		return err
+	}
+
+	// First stat to verify it's a directory
+	statResp, err := client.Stat(fs.authCtx, &storageProvider.StatRequest{
+		Ref: &ref,
+	})
+	if err != nil {
+		return err
+	}
+
+	if statResp.GetStatus().GetCode() != rpc.Code_CODE_OK {
+		if statResp.GetStatus().GetCode() == rpc.Code_CODE_NOT_FOUND {
+			return os.ErrNotExist
+		}
+		return fmt.Errorf("stat failed: %s", statResp.GetStatus().GetMessage())
+	}
+
+	// IEEE 1003.1: If pathname is a symlink, then rmdir should fail with ENOTDIR.
+	if statResp.GetInfo().GetType() != storageProvider.ResourceType_RESOURCE_TYPE_CONTAINER {
+		return syscall.ENOTDIR
+	}
+
+	// Check if directory is empty
+	listResp, err := client.ListContainer(fs.authCtx, &storageProvider.ListContainerRequest{
+		Ref: &ref,
+	})
+	if err != nil {
+		return err
+	}
+
+	if listResp.GetStatus().GetCode() != rpc.Code_CODE_OK {
+		return fmt.Errorf("list container failed: %s", listResp.GetStatus().GetMessage())
+	}
+
+	if len(listResp.GetInfos()) > 0 {
+		return errors.New("directory not empty")
+	}
+
+	// Delete the empty directory
+	deleteResp, err := client.Delete(fs.authCtx, &storageProvider.DeleteRequest{
+		Ref: &ref,
+	})
+	if err != nil {
+		return err
+	}
+
+	if deleteResp.GetStatus().GetCode() != rpc.Code_CODE_OK {
+		if deleteResp.GetStatus().GetCode() == rpc.Code_CODE_NOT_FOUND {
+			return os.ErrNotExist
+		}
+		err = fmt.Errorf("delete directory failed: %s", deleteResp.GetStatus().GetMessage())
+		fs.log.Debug().
+			Err(err).
+			Str("path", pathname).
+			Str("code", deleteResp.GetStatus().GetCode().String()).
+			Msg("Could not delete directory")
+		return err
+	}
 
 	return nil
 }
@@ -623,9 +619,9 @@ func (fs *root) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 			return nil, os.ErrNotExist
 		}
 
-		ref, err := MakeStorageSpaceReference(spc.Id.GetOpaqueId(), relPath)
+		ref, err := makeStorageSpaceReference(spc.Id.GetOpaqueId(), relPath)
 		if err != nil {
-			fs.log.Debug().Err(err).Msg("MakeStorageSpaceReference error")
+			fs.log.Debug().Err(err).Msg("makeStorageSpaceReference error")
 			return nil, err
 		}
 		fs.log.Debug().
@@ -675,7 +671,7 @@ func (fs *root) Filelist(r *sftp.Request) (sftp.ListerAt, error) {
 			return nil, err
 		}
 
-		ref, err := MakeStorageSpaceReference(spc.Id.GetOpaqueId(), relPath)
+		ref, err := makeStorageSpaceReference(spc.Id.GetOpaqueId(), relPath)
 		if err != nil {
 			return nil, err
 		}
@@ -743,206 +739,20 @@ func storageSpacesToFileInfo(spaces []*storageProvider.StorageSpace) []os.FileIn
 	}
 
 	return files
-
 }
 
-func (fs *root) Readlink(pathname string) (string, error) {
-	file, err := fs.lfetch(pathname)
+// makeStorageSpaceReference find a space by id and returns a relative reference
+func makeStorageSpaceReference(spaceID string, relativePath string) (storageProvider.Reference, error) {
+	resourceID, err := storagespace.ParseID(spaceID)
 	if err != nil {
-		return "", err
+		return storageProvider.Reference{}, err
 	}
-
-	if file.symlink == "" {
-		return "", os.ErrInvalid
+	// be tolerant about missing sharesstorageprovider id
+	if resourceID.StorageId == "" && resourceID.SpaceId == utils.ShareStorageSpaceID {
+		resourceID.StorageId = utils.ShareStorageProviderID
 	}
-
-	return file.symlink, nil
-}
-
-// Set a mocked error that the next handler call will return.
-// Set to nil to reset for no error.
-func (fs *root) returnErr(err error) {
-	fs.mockErr = err
-}
-
-func (fs *root) lfetch(path string) (*memFile, error) {
-	if path == "/" {
-		return fs.rootFile, nil
-	}
-
-	file, ok := fs.files[path]
-	if file == nil {
-		if ok {
-			delete(fs.files, path)
-		}
-
-		return nil, os.ErrNotExist
-	}
-
-	return file, nil
-}
-
-// canonName returns the “canonical” name of a file, that is:
-// if the directory of the pathname is a symlink, it follows that symlink to the valid directory name.
-// this is relatively easy, since `dir.name` will be the only valid canonical path for a directory.
-func (fs *root) canonName(pathname string) (string, error) {
-	dirname, filename := path.Dir(pathname), path.Base(pathname)
-
-	dir, err := fs.fetch(dirname)
-	if err != nil {
-		return "", err
-	}
-
-	if !dir.IsDir() {
-		return "", syscall.ENOTDIR
-	}
-
-	return path.Join(dir.name, filename), nil
-}
-
-func (fs *root) exists(path string) bool {
-	path, err := fs.canonName(path)
-	if err != nil {
-		return false
-	}
-
-	_, err = fs.lfetch(path)
-
-	return err != os.ErrNotExist
-}
-
-func (fs *root) fetch(pathname string) (*memFile, error) {
-	file, err := fs.lfetch(pathname)
-	if err != nil {
-		return nil, err
-	}
-
-	var count int
-	for file.symlink != "" {
-		if count++; count > maxSymlinkFollows {
-			return nil, errTooManySymlinks
-		}
-
-		linkTarget := file.symlink
-		if !path.IsAbs(linkTarget) {
-			linkTarget = path.Join(path.Dir(file.name), linkTarget)
-		}
-
-		file, err = fs.lfetch(linkTarget)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return file, nil
-}
-
-// Implements os.FileInfo, io.ReaderAt and io.WriterAt interfaces.
-// These are the 3 interfaces necessary for the Handlers.
-// Implements the optional interface TransferError.
-type memFile struct {
-	name    string
-	modtime time.Time
-	symlink string
-	isdir   bool
-
-	mu      sync.RWMutex
-	content []byte
-	err     error
-}
-
-// These are helper functions, they must be called while holding the memFile.mu mutex
-func (f *memFile) size() int64  { return int64(len(f.content)) }
-func (f *memFile) grow(n int64) { f.content = append(f.content, make([]byte, n)...) }
-
-// Have memFile fulfill os.FileInfo interface
-func (f *memFile) Name() string { return path.Base(f.name) }
-func (f *memFile) Size() int64 {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	return f.size()
-}
-func (f *memFile) Mode() os.FileMode {
-	if f.isdir {
-		return os.FileMode(0755) | os.ModeDir
-	}
-	if f.symlink != "" {
-		return os.FileMode(0777) | os.ModeSymlink
-	}
-	return os.FileMode(0644)
-}
-func (f *memFile) ModTime() time.Time { return f.modtime }
-func (f *memFile) IsDir() bool        { return f.isdir }
-func (f *memFile) Sys() interface{} {
-	return &syscall.Stat_t{Uid: 65534, Gid: 65534}
-}
-
-func (f *memFile) ReadAt(b []byte, off int64) (int, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if f.err != nil {
-		return 0, f.err
-	}
-
-	if off < 0 {
-		return 0, errors.New("memFile.ReadAt: negative offset")
-	}
-
-	if off >= f.size() {
-		return 0, io.EOF
-	}
-
-	n := copy(b, f.content[off:])
-	if n < len(b) {
-		return n, io.EOF
-	}
-
-	return n, nil
-}
-
-func (f *memFile) WriteAt(b []byte, off int64) (int, error) {
-	// fmt.Println(string(p), off)
-	// mimic write delays, should be optional
-	time.Sleep(time.Microsecond * time.Duration(len(b)))
-
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if f.err != nil {
-		return 0, f.err
-	}
-
-	grow := int64(len(b)) + off - f.size()
-	if grow > 0 {
-		f.grow(grow)
-	}
-
-	return copy(f.content[off:], b), nil
-}
-
-func (f *memFile) Truncate(size int64) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	if f.err != nil {
-		return f.err
-	}
-
-	grow := size - f.size()
-	if grow <= 0 {
-		f.content = f.content[:size]
-	} else {
-		f.grow(grow)
-	}
-
-	return nil
-}
-
-func (f *memFile) TransferError(err error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	f.err = err
+	return storageProvider.Reference{
+		ResourceId: &resourceID,
+		Path:       utils.MakeRelativePath(relativePath),
+	}, nil
 }
