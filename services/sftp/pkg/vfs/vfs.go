@@ -212,14 +212,63 @@ func (fs *root) Filecmd(r *sftp.Request) error {
 
 	case "Rmdir":
 		return fs.rmdir(r.Filepath)
-
 	case "Remove":
 		// IEEE 1003.1 remove explicitly can unlink files and remove empty directories.
 		// We use instead here the semantics of unlink, which is allowed to be restricted against directories.
 		return fs.unlink(r.Filepath)
 
 	case "Mkdir":
-		return fs.mkdir(r.Filepath)
+		storageSpaces, err := fs.listStorageSpaces()
+		if err != nil {
+			return err
+		}
+
+		spc, relPath, err := fs.findSpaceForPath(r.Filepath, storageSpaces)
+		if err != nil {
+			return err
+		}
+
+		if spc == nil {
+			return os.ErrNotExist
+		}
+
+		ref, err := MakeStorageSpaceReference(spc.Id.GetOpaqueId(), relPath)
+		if err != nil {
+			fs.log.Debug().Err(err).Msg("MakeStorageSpaceReference error in Mkdir")
+			return err
+		}
+
+		client, err := fs.gwSelector.Next()
+		if err != nil {
+			return err
+		}
+
+		mkCntRes, err := client.CreateContainer(fs.authCtx, &storageProvider.CreateContainerRequest{
+			Ref: &storageProvider.Reference{ResourceId: ref.GetResourceId(), Path: relPath},
+		})
+
+		if err != nil {
+			return err
+		}
+
+		respCode := mkCntRes.GetStatus().GetCode()
+
+		if respCode != rpc.Code_CODE_OK {
+			if respCode == rpc.Code_CODE_ALREADY_EXISTS {
+				return fmt.Errorf("failed to create container: %w", os.ErrExist)
+			}
+
+			err = fmt.Errorf("failed to create container: %s", mkCntRes.GetStatus().GetMessage())
+			fs.log.Debug().
+				Err(err).
+				Str("path", relPath).
+				Str("code", respCode.String()).
+				Msgf("Could not create container: %s", err)
+
+			return err
+		}
+
+		return nil
 
 	case "Link":
 		return fs.link(r.Filepath, r.Target)
