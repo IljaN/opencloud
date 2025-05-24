@@ -20,7 +20,6 @@ import (
 	iofs "io/fs"
 	"os"
 	"path"
-	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -709,29 +708,6 @@ func storageSpacesToFileInfo(spaces []*storageProvider.StorageSpace) []os.FileIn
 
 	return files
 
-}
-
-func (fs *root) readdir(pathname string) ([]os.FileInfo, error) {
-	dir, err := fs.fetch(pathname)
-	if err != nil {
-		return nil, err
-	}
-
-	if !dir.IsDir() {
-		return nil, syscall.ENOTDIR
-	}
-
-	var files []os.FileInfo
-
-	for name, file := range fs.files {
-		if path.Dir(name) == dir.name {
-			files = append(files, file)
-		}
-	}
-
-	sort.Slice(files, func(i, j int) bool { return files[i].Name() < files[j].Name() })
-
-	return files, nil
 }
 
 func (fs *root) Readlink(pathname string) (string, error) {
